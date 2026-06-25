@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isEphemeralStorage } from "@/lib/data-path";
+import { isKvStorageEnabled } from "@/lib/storage-kv";
 import { imagesToDataUrls } from "@/lib/images";
 import { saveProductThumbnail, toAbsoluteImageUrl } from "@/lib/image-store";
 import { generateFullProductPage } from "@/lib/generation";
@@ -55,7 +56,13 @@ export async function POST(request: NextRequest) {
     }
 
     const product = await createProduct([]);
-    const thumbnailPath = await saveProductThumbnail(product.id, imageUrls[0]);
+
+    let thumbnailPath: string;
+    if (isKvStorageEnabled()) {
+      thumbnailPath = imageUrls[0];
+    } else {
+      thumbnailPath = await saveProductThumbnail(product.id, imageUrls[0]);
+    }
     await updateProductImages(product.id, [thumbnailPath]);
 
     try {
@@ -67,13 +74,15 @@ export async function POST(request: NextRequest) {
       const allWarnings = [...warnings];
       if (isEphemeralStorage()) {
         allWarnings.push(
-          "Vercel 서버리스 환경에서는 생성 이력이 일시적으로만 저장됩니다. 대시보드 목록이 비어 있을 수 있습니다."
+          "Vercel KV가 연결되지 않아 생성 이력이 유지되지 않을 수 있습니다. Vercel 대시보드 → Storage → KV를 연결해 주세요."
         );
       }
 
       const displayImages = thumbnailImageUrl
         ? [thumbnailImageUrl, toAbsoluteImageUrl(thumbnailPath)]
-        : [toAbsoluteImageUrl(thumbnailPath)];
+        : thumbnailPath.startsWith("data:")
+          ? [thumbnailPath]
+          : [toAbsoluteImageUrl(thumbnailPath)];
 
       const htmlContent = generateHtml(normalizedContent, displayImages);
       const markdownContent = generateMarkdown(normalizedContent);

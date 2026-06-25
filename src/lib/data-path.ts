@@ -1,6 +1,6 @@
 import os from "os";
 import path from "path";
-
+import { isKvStorageEnabled } from "@/lib/storage-kv";
 /** Vercel/Lambda 등 읽기 전용 파일시스템 환경 */
 export function isServerlessRuntime(): boolean {
   return Boolean(
@@ -11,7 +11,7 @@ export function isServerlessRuntime(): boolean {
 }
 
 export function isEphemeralStorage(): boolean {
-  return isServerlessRuntime();
+  return isServerlessRuntime() && !isKvStorageEnabled();
 }
 
 export function getDataRoot(): string {

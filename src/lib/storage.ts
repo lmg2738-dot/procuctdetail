@@ -2,6 +2,11 @@ import { promises as fs } from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
 import {
+  isKvStorageEnabled,
+  readProductsFromKv,
+  writeProductsToKv,
+} from "@/lib/storage-kv";
+import {
   getDataRoot,
   getImagesRoot,
   getProductsFilePath,
@@ -9,6 +14,10 @@ import {
 import type { GeneratedPage, Product, ProductAnalysis } from "@/types";
 
 const PRODUCTS_FILE = getProductsFilePath();
+
+export function usesPersistentStorage(): boolean {
+  return isKvStorageEnabled();
+}
 export interface StoredProduct extends Product {
   generated_pages: GeneratedPage[];
 }
@@ -43,7 +52,9 @@ async function readProducts(): Promise<StoredProduct[]> {
     return cache;
   }
 
-  cache = await readProductsFromDisk();
+  cache = isKvStorageEnabled()
+    ? ((await readProductsFromKv()) as StoredProduct[])
+    : await readProductsFromDisk();
   cacheLoadedAt = now;
   return cache;
 }
@@ -54,8 +65,17 @@ function invalidateCache(): void {
 }
 
 async function writeProducts(products: StoredProduct[]): Promise<void> {
-  await ensureDataDir();
-  await fs.writeFile(PRODUCTS_FILE, JSON.stringify(products, null, 2), "utf-8");
+  if (isKvStorageEnabled()) {
+    await writeProductsToKv(products);
+  } else {
+    await ensureDataDir();
+    await fs.writeFile(
+      PRODUCTS_FILE,
+      JSON.stringify(products, null, 2),
+      "utf-8"
+    );
+  }
+
   cache = products;
   cacheLoadedAt = Date.now();
 }
@@ -185,8 +205,10 @@ export async function deleteProduct(id: string): Promise<boolean> {
 
   await writeProducts(nextProducts);
 
-  const imageDir = path.join(getImagesRoot(), id);
-  await fs.rm(imageDir, { recursive: true, force: true });
+  if (!isKvStorageEnabled()) {
+    const imageDir = path.join(getImagesRoot(), id);
+    await fs.rm(imageDir, { recursive: true, force: true });
+  }
 
   return true;
 }
