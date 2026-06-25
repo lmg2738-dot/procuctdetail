@@ -11,6 +11,7 @@ import {
   completeProduct,
   createProduct,
   failProduct,
+  getProductById,
   updateProductImages,
 } from "@/lib/storage";
 
@@ -67,6 +68,8 @@ export async function POST(request: NextRequest) {
       thumbnailPath = await saveProductThumbnail(product.id, imageUrls[0]);
     }
     await updateProductImages(product.id, thumbnailPath ? [thumbnailPath] : []);
+    const knownProduct =
+      (await getProductById(product.id)) ?? product;
 
     try {
       const { analysis, content, thumbnailImageUrl, warnings } =
@@ -94,21 +97,25 @@ export async function POST(request: NextRequest) {
       const htmlContent = generateHtml(normalizedContent, displayImages);
       const markdownContent = generateMarkdown(normalizedContent);
 
-      const { page } = await completeProduct(product.id, {
-        title: normalizedContent.title,
-        analysis,
-        page: {
+      const { page } = await completeProduct(
+        product.id,
+        {
           title: normalizedContent.title,
-          description: normalizedContent.description,
-          features: normalizedContent.features,
-          faq: normalizedContent.faq,
-          seo_keywords: normalizedContent.seoKeywords,
-          thumbnail_text: normalizedContent.thumbnailText,
-          marketing_copy: normalizedContent.marketingCopy,
-          html_content: htmlContent,
-          markdown_content: markdownContent,
+          analysis,
+          page: {
+            title: normalizedContent.title,
+            description: normalizedContent.description,
+            features: normalizedContent.features,
+            faq: normalizedContent.faq,
+            seo_keywords: normalizedContent.seoKeywords,
+            thumbnail_text: normalizedContent.thumbnailText,
+            marketing_copy: normalizedContent.marketingCopy,
+            html_content: htmlContent,
+            markdown_content: markdownContent,
+          },
         },
-      });
+        { knownProduct }
+      );
 
       return NextResponse.json({
         success: true,
@@ -124,11 +131,13 @@ export async function POST(request: NextRequest) {
     } catch (genError) {
       const message =
         genError instanceof Error ? genError.message : "생성 실패";
-      await failProduct(product.id, message);
+      console.error("[generate] failed:", message, { productId: product.id });
+      await failProduct(product.id, message, { knownProduct });
       return NextResponse.json({ error: message }, { status: 500 });
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "서버 오류";
+    console.error("[generate] request error:", message);
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

@@ -30,7 +30,53 @@ export interface ProductSummary extends Omit<StoredProduct, "generated_pages"> {
 
 let cache: StoredProduct[] | null = null;
 let cacheLoadedAt = 0;
-const CACHE_TTL_MS = 5_000;
+/** AI 생성(~20s+) 동안 캐시가 만료되지 않도록 충분히 길게 설정 */
+const CACHE_TTL_MS = 300_000;
+
+function mergeProductLists(
+  primary: StoredProduct[],
+  secondary: StoredProduct[]
+): StoredProduct[] {
+  const map = new Map<string, StoredProduct>();
+
+  for (const product of secondary) {
+    map.set(product.id, product);
+  }
+
+  for (const product of primary) {
+    const existing = map.get(product.id);
+    if (
+      !existing ||
+      new Date(product.updated_at).getTime() >=
+        new Date(existing.updated_at).getTime()
+    ) {
+      map.set(product.id, product);
+    }
+  }
+
+  return Array.from(map.values()).sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+  );
+}
+
+function ensureProductInList(
+  products: StoredProduct[],
+  productId: string,
+  fallback?: StoredProduct
+): { products: StoredProduct[]; index: number } {
+  const index = products.findIndex((product) => product.id === productId);
+  if (index !== -1) {
+    return { products, index };
+  }
+
+  if (fallback?.id === productId) {
+    const next = [fallback, ...products.filter((product) => product.id !== productId)];
+    return { products: next, index: 0 };
+  }
+
+  return { products, index: -1 };
+}
 
 async function ensureDataDir(): Promise<void> {
   await fs.mkdir(getDataRoot(), { recursive: true });
@@ -66,7 +112,10 @@ function invalidateCache(): void {
 
 async function writeProducts(products: StoredProduct[]): Promise<void> {
   if (isKvStorageEnabled()) {
-    await writeProductsToKv(products);
+    const remote = (await readProductsFromKv()) as StoredProduct[];
+    const merged = mergeProductLists(products, remote);
+    await writeProductsToKv(merged);
+    cache = merged;
   } else {
     await ensureDataDir();
     await fs.writeFile(
@@ -74,9 +123,9 @@ async function writeProducts(products: StoredProduct[]): Promise<void> {
       JSON.stringify(products, null, 2),
       "utf-8"
     );
+    cache = products;
   }
 
-  cache = products;
   cacheLoadedAt = Date.now();
 }
 
@@ -142,14 +191,22 @@ export async function completeProduct(
     title: string;
     analysis: ProductAnalysis;
     page: Omit<GeneratedPage, "id" | "product_id" | "created_at" | "updated_at">;
-  }
+  },
+  options?: { knownProduct?: StoredProduct }
 ): Promise<{ product: StoredProduct; page: GeneratedPage }> {
-  const products = await readProducts();
-  const index = products.findIndex((product) => product.id === productId);
+  let products = await readProducts();
+  const located = ensureProductInList(
+    products,
+    productId,
+    options?.knownProduct
+  );
 
-  if (index === -1) {
+  if (located.index === -1) {
     throw new Error("상품을 찾을 수 없습니다.");
   }
+
+  products = located.products;
+  const index = located.index;
 
   const now = new Date().toISOString();
   const page: GeneratedPage = {
@@ -176,14 +233,22 @@ export async function completeProduct(
 
 export async function failProduct(
   productId: string,
-  errorMessage: string
+  errorMessage: string,
+  options?: { knownProduct?: StoredProduct }
 ): Promise<void> {
-  const products = await readProducts();
-  const index = products.findIndex((product) => product.id === productId);
+  let products = await readProducts();
+  const located = ensureProductInList(
+    products,
+    productId,
+    options?.knownProduct
+  );
 
-  if (index === -1) {
+  if (located.index === -1) {
     return;
   }
+
+  products = located.products;
+  const index = located.index;
 
   products[index] = {
     ...products[index],
