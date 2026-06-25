@@ -56,8 +56,31 @@ async function redisSet(key: string, value: unknown): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error("Redis 저장에 실패했습니다.");
+    const detail = await response.text().catch(() => "");
+    throw new Error(
+      `Redis 저장에 실패했습니다.${detail ? ` (${response.status})` : ""}`
+    );
   }
+}
+
+function sanitizeProductsForKv(products: unknown[]): unknown[] {
+  return products.map((item) => {
+    if (!item || typeof item !== "object") {
+      return item;
+    }
+
+    const product = item as { image_urls?: unknown };
+    if (!Array.isArray(product.image_urls)) {
+      return item;
+    }
+
+    return {
+      ...product,
+      image_urls: product.image_urls.map((url) =>
+        typeof url === "string" && url.startsWith("data:") ? "" : url
+      ),
+    };
+  });
 }
 
 export async function readProductsFromKv(): Promise<unknown[]> {
@@ -74,6 +97,6 @@ export async function readProductsFromKv(): Promise<unknown[]> {
 }
 
 export async function writeProductsToKv(products: unknown[]): Promise<void> {
-  const trimmed = products.slice(0, MAX_STORED_PRODUCTS);
+  const trimmed = sanitizeProductsForKv(products).slice(0, MAX_STORED_PRODUCTS);
   await redisSet(PRODUCTS_KEY, trimmed);
 }

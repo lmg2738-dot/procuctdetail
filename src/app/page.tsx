@@ -7,6 +7,7 @@ import GeneratedOutput from "@/components/GeneratedOutput";
 import ExportButtons from "@/components/ExportButtons";
 import LoadingOverlay, { EmptyStateHero } from "@/components/LoadingOverlay";
 import { filesToCompressedImages } from "@/lib/compress-image";
+import { readApiJson } from "@/lib/api-client";
 import type { GeneratedContent } from "@/types";
 
 export default function HomePage() {
@@ -47,7 +48,14 @@ export default function HomePage() {
         }),
       });
 
-      const data = await response.json();
+      const data = await readApiJson<{
+        error?: string;
+        content: GeneratedContent;
+        html: string;
+        markdown: string;
+        productId: string;
+        warnings?: string[];
+      }>(response);
 
       if (!response.ok) {
         throw new Error(data.error || "생성에 실패했습니다.");

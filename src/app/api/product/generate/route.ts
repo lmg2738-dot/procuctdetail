@@ -30,6 +30,8 @@ const generateSchema = z.object({
     .optional(),
 });
 
+export const maxDuration = 60;
+
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
@@ -59,11 +61,12 @@ export async function POST(request: NextRequest) {
 
     let thumbnailPath: string;
     if (isKvStorageEnabled()) {
-      thumbnailPath = imageUrls[0];
+      // Redis에는 대용량 data URL을 저장하지 않음 (용량·타임아웃 방지)
+      thumbnailPath = "";
     } else {
       thumbnailPath = await saveProductThumbnail(product.id, imageUrls[0]);
     }
-    await updateProductImages(product.id, [thumbnailPath]);
+    await updateProductImages(product.id, thumbnailPath ? [thumbnailPath] : []);
 
     try {
       const { analysis, content, thumbnailImageUrl, warnings } =
@@ -77,11 +80,16 @@ export async function POST(request: NextRequest) {
         allWarnings.push(storageWarning);
       }
 
+      const displayThumbnail =
+        thumbnailPath || imageUrls[0];
+
       const displayImages = thumbnailImageUrl
-        ? [thumbnailImageUrl, toAbsoluteImageUrl(thumbnailPath)]
-        : thumbnailPath.startsWith("data:")
-          ? [thumbnailPath]
-          : [toAbsoluteImageUrl(thumbnailPath)];
+        ? [thumbnailImageUrl, toAbsoluteImageUrl(displayThumbnail)]
+        : displayThumbnail.startsWith("data:")
+          ? [displayThumbnail]
+          : displayThumbnail
+            ? [toAbsoluteImageUrl(displayThumbnail)]
+            : imageUrls;
 
       const htmlContent = generateHtml(normalizedContent, displayImages);
       const markdownContent = generateMarkdown(normalizedContent);
@@ -110,7 +118,7 @@ export async function POST(request: NextRequest) {
         html: htmlContent,
         markdown: markdownContent,
         thumbnailImageUrl,
-        imageUrl: thumbnailPath,
+        imageUrl: displayThumbnail,
         warnings: allWarnings,
       });
     } catch (genError) {

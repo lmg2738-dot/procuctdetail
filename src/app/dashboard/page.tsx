@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowRight, FolderOpen, Loader2, Plus } from "lucide-react";
 import ProductCard from "@/components/ProductCard";
+import { readApiJson } from "@/lib/api-client";
 import type { Product, GeneratedPage } from "@/types";
 
 interface ProductWithPages extends Product {
@@ -20,7 +21,11 @@ export default function DashboardPage() {
     async function fetchProducts() {
       try {
         const res = await fetch("/api/products");
-        const data = await res.json();
+        const data = await readApiJson<{
+          error?: string;
+          products?: ProductWithPages[];
+          storage?: { warning?: string | null };
+        }>(res);
         if (!res.ok) throw new Error(data.error);
         setProducts(data.products || []);
         setStorageWarning(data.storage?.warning ?? null);

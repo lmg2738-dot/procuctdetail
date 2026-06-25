@@ -7,6 +7,7 @@ import { ArrowLeft, Loader2 } from "lucide-react";
 import GeneratedOutput from "@/components/GeneratedOutput";
 import ExportButtons from "@/components/ExportButtons";
 import { normalizeGeneratedContent } from "@/lib/normalize-content";
+import { readApiJson } from "@/lib/api-client";
 import type { Product, GeneratedPage, GeneratedContent } from "@/types";
 
 interface ProductWithPages extends Product {
@@ -24,9 +25,12 @@ export default function ProductDetailPage() {
     async function fetchProduct() {
       try {
         const res = await fetch(`/api/products/${id}`);
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error);
-        setProduct(data.product);
+        const data = await readApiJson<{
+          error?: string;
+          product?: ProductWithPages;
+        }>(res);
+        if (!res.ok) throw new Error(data.error || "조회 실패");
+        setProduct(data.product ?? null);
       } catch (err) {
         setError(err instanceof Error ? err.message : "조회 실패");
       } finally {
