@@ -3,11 +3,14 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
 const RETRY_DELAY_MS = 800;
 const MAX_PASSES = 2;
+const MAX_PASSES_TEXT = 4;
 const MAX_PASSES_VISION = 3;
 const MAX_PASSES_QUICK = 1;
 const MAX_MODEL_ATTEMPTS = 5;
+const MAX_MODEL_ATTEMPTS_TEXT = 12;
 const MAX_MODEL_ATTEMPTS_VISION = 10;
 const PASS_DELAYS_MS = [0, 4000];
+const TEXT_PASS_DELAYS_MS = [0, 2500, 6000, 12000];
 const VISION_PASS_DELAYS_MS = [0, 3000, 6000];
 
 const APP_REFERER =
@@ -29,13 +32,21 @@ const PRIORITY_VISION_MODELS = [
 /** 무료 비전(이미지 입력) 모델 — API 목록 실패 시 폴백 */
 const FALLBACK_FREE_VISION_MODELS = PRIORITY_VISION_MODELS;
 
-/** 무료 텍스트 생성 모델 폴백 */
-const FALLBACK_FREE_TEXT_MODELS = [
+/** 텍스트 생성 우선 모델 — rate limit 시 순차 시도 */
+const PRIORITY_TEXT_MODELS = [
+  "google/gemini-2.0-flash-lite-preview-02-05:free",
+  "google/gemma-3-27b-it:free",
   "meta-llama/llama-3.3-70b-instruct:free",
   "meta-llama/llama-3.2-3b-instruct:free",
-  "google/gemma-3-27b-it:free",
   "mistralai/mistral-small-3.1-24b-instruct:free",
+  "qwen/qwen-2.5-72b-instruct:free",
+  "deepseek/deepseek-r1-distill-llama-70b:free",
+  "microsoft/phi-3-mini-128k-instruct:free",
+  "nousresearch/deephermes-3-llama-3-8b-preview:free",
 ];
+
+/** 무료 텍스트 생성 모델 폴백 */
+const FALLBACK_FREE_TEXT_MODELS = PRIORITY_TEXT_MODELS;
 
 /** 무료 이미지 생성(출력) 모델 폴백 */
 const FALLBACK_FREE_IMAGE_GEN_MODELS = [
@@ -322,6 +333,11 @@ async function getCandidateModels(
     return [pinnedVision];
   }
 
+  const pinnedText = process.env.OPENROUTER_TEXT_MODEL?.trim();
+  if (task === "text" && pinnedText) {
+    return [pinnedText];
+  }
+
   const cache = cacheByTask[task];
   const now = Date.now();
   let models: string[];
@@ -350,6 +366,16 @@ async function getCandidateModels(
     );
     const rest = shuffle(
       filtered.filter((id) => !PRIORITY_VISION_MODELS.includes(id))
+    );
+    return [...priority, ...rest];
+  }
+
+  if (task === "text" && options?.prioritize) {
+    const priority = PRIORITY_TEXT_MODELS.filter((id) =>
+      filtered.includes(id)
+    );
+    const rest = shuffle(
+      filtered.filter((id) => !PRIORITY_TEXT_MODELS.includes(id))
     );
     return [...priority, ...rest];
   }
@@ -429,11 +455,16 @@ async function tryModels<T>(
 ): Promise<{ content: T; model: string } | null> {
   const maxAttempts =
     options?.maxAttempts ??
-    (task === "vision" ? MAX_MODEL_ATTEMPTS_VISION : MAX_MODEL_ATTEMPTS);
+    (task === "vision"
+      ? MAX_MODEL_ATTEMPTS_VISION
+      : task === "text"
+        ? MAX_MODEL_ATTEMPTS_TEXT
+        : MAX_MODEL_ATTEMPTS);
 
   const candidates = (
     await getCandidateModels(task, ignoreCooldown, {
-      prioritize: options?.prioritize ?? task === "vision",
+      prioritize:
+        options?.prioritize ?? (task === "vision" || task === "text"),
     })
   ).slice(0, maxAttempts);
 
@@ -497,7 +528,12 @@ async function runWithPasses<T>(
   options?: { delays?: number[]; maxAttempts?: number; prioritize?: boolean }
 ): Promise<{ content: T; model: string } | null> {
   const delays =
-    options?.delays ?? (task === "vision" ? VISION_PASS_DELAYS_MS : PASS_DELAYS_MS);
+    options?.delays ??
+    (task === "vision"
+      ? VISION_PASS_DELAYS_MS
+      : task === "text"
+        ? TEXT_PASS_DELAYS_MS
+        : PASS_DELAYS_MS);
 
   for (let pass = 0; pass < maxPasses; pass++) {
     const ignoreCooldown = pass > 0;
@@ -508,7 +544,8 @@ async function runWithPasses<T>(
       ignoreCooldown,
       {
         maxAttempts: options?.maxAttempts,
-        prioritize: options?.prioritize ?? task === "vision",
+        prioritize:
+          options?.prioritize ?? (task === "vision" || task === "text"),
       }
     );
 
@@ -564,11 +601,48 @@ export async function tryChatWithFreeVisionModels<T>(options: {
   }
 }
 
+/** 텍스트 전용 — 다중 모델·재시도로 rate limit 완화 */
+export async function chatWithFreeTextModels<T>(options: {
+  messages: ChatMessage[];
+  maxTokens: number;
+}): Promise<{ content: T; model: string }> {
+  const result = await runWithPasses<T>(
+    "text",
+    options.messages,
+    options.maxTokens,
+    MAX_PASSES_TEXT,
+    { prioritize: true, maxAttempts: MAX_MODEL_ATTEMPTS_TEXT }
+  );
+
+  if (result) {
+    return result;
+  }
+
+  throw new Error(
+    "무료 텍스트 모델이 모두 일시적으로 사용량 제한 상태입니다. 1~2분 후 다시 시도하거나 상품 힌트를 입력해 주세요."
+  );
+}
+
+export async function tryChatWithFreeTextModels<T>(options: {
+  messages: ChatMessage[];
+  maxTokens: number;
+}): Promise<{ content: T; model: string } | null> {
+  try {
+    return await chatWithFreeTextModels<T>(options);
+  } catch {
+    return null;
+  }
+}
+
 export async function chatWithFreeModels<T>(options: {
   task: ModelTask;
   messages: ChatMessage[];
   maxTokens: number;
 }): Promise<{ content: T; model: string }> {
+  if (options.task === "text") {
+    return chatWithFreeTextModels<T>(options);
+  }
+
   const result = await runWithPasses<T>(
     options.task,
     options.messages,

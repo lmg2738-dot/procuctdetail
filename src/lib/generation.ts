@@ -4,9 +4,10 @@ import {
   normalizeProductAnalysis,
 } from "./normalize-content";
 import {
-  chatWithFreeModels,
+  chatWithFreeTextModels,
   chatWithFreeVisionModels,
   generateImageWithFreeModels,
+  tryChatWithFreeTextModels,
   tryChatWithFreeVisionModels,
 } from "./openrouter";
 import type { GeneratedContent, ProductAnalysis } from "@/types";
@@ -149,6 +150,55 @@ function hasUsableHint(productHint?: string): boolean {
   return !generic.includes(hint);
 }
 
+function buildContentFromAnalysis(analysis: ProductAnalysis): GeneratedContent {
+  const productName = analysis.productType || analysis.category || "상품";
+  const features =
+    analysis.keyFeatures.length > 0
+      ? analysis.keyFeatures
+      : [`${productName}의 핵심 장점`];
+
+  return normalizeGeneratedContent({
+    title: productName.slice(0, 50),
+    description: `${productName}입니다. ${analysis.targetAudience}에게 추천하는 상품으로, ${features.slice(0, 3).join(", ")} 등의 특징을 갖고 있습니다.`,
+    features: features.map((f) => `${f} — 만족도 높은 선택`),
+    faq: [
+      {
+        question: "어떤 분에게 추천하나요?",
+        answer: analysis.targetAudience,
+      },
+      {
+        question: "배송은 얼마나 걸리나요?",
+        answer: "주문 후 2~3일 내 출고됩니다.",
+      },
+    ],
+    seoKeywords: [
+      productName,
+      analysis.category,
+      ...analysis.colors.slice(0, 3),
+    ],
+    thumbnailText: productName.slice(0, 20),
+    marketingCopy: `${productName} — 지금 만나보세요.`,
+  });
+}
+
+function buildFallbackFromHint(hint: string): CombinedResult {
+  const analysis = normalizeProductAnalysis({
+    category: "일반 상품",
+    productType: hint,
+    colors: [],
+    materials: [],
+    keyFeatures: [hint],
+    targetAudience: "온라인 쇼핑 고객",
+    priceRange: "가격 문의",
+    brandStyle: "모던",
+  });
+
+  return {
+    analysis,
+    content: buildContentFromAnalysis(analysis),
+  };
+}
+
 function isThumbnailImageEnabled(): boolean {
   return process.env.ENABLE_THUMBNAIL_IMAGE === "true";
 }
@@ -226,20 +276,30 @@ async function tryVisionAnalysisThenContent(
     return null;
   }
 
-  const content = await generateProductContent(analysis);
+  let content: GeneratedContent;
+  try {
+    content = await generateProductContent(analysis);
+  } catch {
+    content = buildContentFromAnalysis(analysis);
+  }
+
   return { analysis, content };
 }
 
 async function tryCombinedHint(hint: string): Promise<CombinedResult | null> {
   const prompt = COMBINED_HINT_PROMPT.replace("{hint}", hint);
 
-  const result = await chatWithFreeModels<CombinedResult>({
-    task: "text",
-    maxTokens: 2200,
+  const result = await tryChatWithFreeTextModels<CombinedResult>({
+    maxTokens: 2000,
     messages: [{ role: "user", content: prompt }],
   });
 
-  return normalizeCombinedResult(result.content);
+  if (result) {
+    const normalized = normalizeCombinedResult(result.content);
+    if (normalized) return normalized;
+  }
+
+  return buildFallbackFromHint(hint);
 }
 
 export async function generateProductContent(
@@ -250,9 +310,8 @@ export async function generateProductContent(
     JSON.stringify(analysis, null, 2)
   );
 
-  const { content } = await chatWithFreeModels<GeneratedContent>({
-    task: "text",
-    maxTokens: 2000,
+  const { content } = await chatWithFreeTextModels<GeneratedContent>({
+    maxTokens: 1800,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -297,17 +356,11 @@ export async function generateFullProductPage(
     content = combinedVision.content;
   } else if (hasUsableHint(productHint)) {
     const combinedHint = await tryCombinedHint(productHint!.trim());
-    if (!combinedHint) {
-      throw new Error(
-        "이미지 분석에 실패했습니다. 잠시 후 다시 시도해 주세요."
-      );
-    }
-
-    analysis = combinedHint.analysis;
-    content = combinedHint.content;
+    analysis = combinedHint!.analysis;
+    content = combinedHint!.content;
     usedVisionFallback = true;
     warnings.push(
-      "비전 모델 사용량 제한으로 이미지 분석 대신 입력하신 힌트 기반으로 상품 정보를 생성했습니다."
+      "비전/텍스트 모델 사용량 제한으로 입력 힌트 기반으로 상품 정보를 생성했습니다."
     );
   } else {
     throw new Error(
