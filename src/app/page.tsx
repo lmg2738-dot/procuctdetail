@@ -36,7 +36,7 @@ export default function HomePage() {
     setLoadingMessage("이미지를 최적화하고 있습니다...");
 
     try {
-      const images = await filesToCompressedImages(files, 2);
+      const images = await filesToCompressedImages(files, 1, 768);
       setLoadingMessage("AI가 상세페이지를 작성하고 있습니다...");
 
       const response = await fetch("/api/product/generate", {

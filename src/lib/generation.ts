@@ -12,6 +12,7 @@ import {
   generateImageWithFreeModels,
   tryChatWithFreeTextModels,
   tryChatWithFreeVisionModels,
+  trySingleVisionModel,
 } from "./openrouter";
 import type { GeneratedContent, ProductAnalysis } from "@/types";
 
@@ -224,6 +225,15 @@ async function tryCombinedVision(
   ];
 
   if (isServerlessRuntime()) {
+    const single = await trySingleVisionModel<CombinedResult>({
+      maxTokens,
+      messages,
+    });
+    const singleResult = normalizeCombinedResult(single?.content ?? null);
+    if (singleResult) {
+      return singleResult;
+    }
+
     try {
       const result = await chatWithFreeVisionModels<CombinedResult>({
         maxTokens,
@@ -399,10 +409,6 @@ export async function generateFullProductPage(
       if (hintResult.offline) {
         warnings.push(
           "AI 생성에 실패해 기본 템플릿으로 대체되었습니다. 상품 힌트를 구체적으로 입력하거나 잠시 후 다시 시도해 주세요."
-        );
-      } else {
-        warnings.push(
-          "이미지 분석이 제한되어 입력 힌트 기반으로 상품 정보를 생성했습니다."
         );
       }
     } else {

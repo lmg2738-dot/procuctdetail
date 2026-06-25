@@ -673,6 +673,64 @@ export async function chatWithFreeVisionModels<T>(options: {
   );
 }
 
+/** 비전 단일 모델 1회 시도 — Vercel 등 서버리스 빠른 경로 */
+export async function trySingleVisionModel<T>(options: {
+  messages: ChatMessage[];
+  maxTokens: number;
+}): Promise<{ content: T; model: string } | null> {
+  if (!hasGenerationBudget()) {
+    return null;
+  }
+
+  const candidates = [
+    process.env.OPENROUTER_VISION_MODEL?.trim(),
+    "google/gemini-2.0-flash-lite-preview-02-05:free",
+    "google/gemini-2.0-flash-exp:free",
+    "google/gemma-3-27b-it:free",
+  ].filter((id): id is string => Boolean(id));
+
+  const seen = new Set<string>();
+  const jsonModes = isServerlessDeploy() ? [true] : [true, false];
+
+  for (const model of candidates) {
+    if (seen.has(model) || failedModels.has(model) || isTemporarilyBlocked(model)) {
+      continue;
+    }
+    seen.add(model);
+
+    for (const useJsonMode of jsonModes) {
+      try {
+        const result = await requestCompletion(
+          model,
+          options.messages,
+          options.maxTokens,
+          useJsonMode
+        );
+
+        if (!result.ok) {
+          if (isRateLimited(result.status, result.body)) {
+            markRateLimited(model);
+            break;
+          }
+          if (isModelUnavailable(result.status, result.body)) {
+            failedModels.add(model);
+            break;
+          }
+          if (useJsonMode) continue;
+          break;
+        }
+
+        const parsed = JSON.parse(extractJsonContent(result.content)) as T;
+        return { content: parsed, model };
+      } catch {
+        if (useJsonMode) continue;
+      }
+    }
+  }
+
+  return null;
+}
+
 /** 비전 1회 빠른 시도 — 내부 폴백 체인용 */
 export async function tryChatWithFreeVisionModels<T>(options: {
   messages: ChatMessage[];

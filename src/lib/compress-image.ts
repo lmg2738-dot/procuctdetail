@@ -55,8 +55,9 @@ export async function compressImageFile(
 
 export async function filesToCompressedImages(
   files: File[],
-  maxImages = 2
+  maxImages = 2,
+  maxWidth = 1024
 ): Promise<{ data: string; mimeType: string; name: string }[]> {
   const selected = files.slice(0, maxImages);
-  return Promise.all(selected.map((file) => compressImageFile(file)));
+  return Promise.all(selected.map((file) => compressImageFile(file, maxWidth)));
 }
