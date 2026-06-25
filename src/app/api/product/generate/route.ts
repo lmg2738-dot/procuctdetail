@@ -72,12 +72,17 @@ export async function POST(request: NextRequest) {
       (await getProductById(product.id)) ?? product;
 
     try {
-      const { analysis, content, thumbnailImageUrl, warnings } =
+      const { analysis, content, thumbnailImageUrl, warnings, generationSource } =
         await generateFullProductPage(imageUrls, parsed.data.productHint);
 
       const normalizedContent = normalizeGeneratedContent(content);
 
       const allWarnings = [...warnings];
+      if (generationSource === "hint-ai") {
+        allWarnings.push(
+          "이미지 분석이 제한되어 힌트 기반으로 생성했습니다. 사진 기반 품질을 원하면 1~2분 후 다시 시도해 주세요."
+        );
+      }
       const storageWarning = getStorageWarning();
       if (storageWarning) {
         allWarnings.push(storageWarning);
@@ -126,6 +131,7 @@ export async function POST(request: NextRequest) {
         markdown: markdownContent,
         thumbnailImageUrl,
         imageUrl: displayThumbnail,
+        generationSource,
         warnings: allWarnings,
       });
     } catch (genError) {

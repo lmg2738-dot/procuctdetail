@@ -13,21 +13,23 @@ const PASS_DELAYS_MS = [0, 4000];
 const TEXT_PASS_DELAYS_MS = [0, 2500, 6000, 12000];
 const VISION_PASS_DELAYS_MS = [0, 3000, 6000];
 
-/** Vercel 60s 제한 내 완료 — AI 품질과 타임아웃 균형 */
-const SERVERLESS_GENERATION_BUDGET_MS = 55_000;
-const SERVERLESS_REQUEST_TIMEOUT_MS = 24_000;
-const SERVERLESS_MAX_PASSES_VISION = 2;
-const SERVERLESS_MAX_PASSES_TEXT = 2;
-const SERVERLESS_MAX_ATTEMPTS_VISION = 4;
-const SERVERLESS_MAX_ATTEMPTS_TEXT = 6;
-const SERVERLESS_PASS_DELAYS_MS = [0, 2_500];
+/** Vercel 60s 한도 — 로컬과 동일 품질에 가깝게 재시도 */
+const SERVERLESS_GENERATION_BUDGET_MS = 58_000;
+const SERVERLESS_REQUEST_TIMEOUT_MS = 28_000;
+const SERVERLESS_MAX_PASSES_VISION = 3;
+const SERVERLESS_MAX_PASSES_TEXT = 3;
+const SERVERLESS_MAX_ATTEMPTS_VISION = 8;
+const SERVERLESS_MAX_ATTEMPTS_TEXT = 10;
+const SERVERLESS_PASS_DELAYS_MS = [0, 2_000, 4_000];
 
 let generationDeadline: number | null = null;
 
-export function beginGenerationBudget(
-  budgetMs = SERVERLESS_GENERATION_BUDGET_MS
-): void {
-  generationDeadline = Date.now() + budgetMs;
+export function beginGenerationBudget(): void {
+  if (!isServerlessDeploy()) {
+    generationDeadline = null;
+    return;
+  }
+  generationDeadline = Date.now() + SERVERLESS_GENERATION_BUDGET_MS;
 }
 
 export function clearGenerationBudget(): void {
@@ -75,11 +77,26 @@ function getPassDelays(task: ModelTask): number[] {
   return SERVERLESS_PASS_DELAYS_MS;
 }
 
-const APP_REFERER =
-  process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ??
-  (process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : "http://localhost:50005");
+function resolveAppReferer(): string {
+  const configured = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");
+  const isLocalhost =
+    !configured ||
+    configured.includes("localhost") ||
+    configured.includes("127.0.0.1");
+
+  if (isServerlessDeploy()) {
+    if (configured && !isLocalhost) {
+      return configured;
+    }
+    if (process.env.VERCEL_URL) {
+      return `https://${process.env.VERCEL_URL}`;
+    }
+  }
+
+  return configured ?? "http://localhost:50005";
+}
+
+const APP_REFERER = resolveAppReferer();
 
 /** 비전 정확도 우선 — 상위 모델부터 순차 시도 (셔플하지 않음) */
 const PRIORITY_VISION_MODELS = [
@@ -559,7 +576,7 @@ async function tryModels<T>(
       return null;
     }
 
-    const jsonModes = isServerlessDeploy() ? [true] : [true, false];
+    const jsonModes = [true, false];
 
     for (const useJsonMode of jsonModes) {
       try {
@@ -690,7 +707,7 @@ export async function trySingleVisionModel<T>(options: {
   ].filter((id): id is string => Boolean(id));
 
   const seen = new Set<string>();
-  const jsonModes = isServerlessDeploy() ? [true] : [true, false];
+  const jsonModes = [true, false];
 
   for (const model of candidates) {
     if (seen.has(model) || failedModels.has(model) || isTemporarilyBlocked(model)) {
