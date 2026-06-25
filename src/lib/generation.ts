@@ -3,9 +3,12 @@ import {
   normalizeGeneratedContent,
   normalizeProductAnalysis,
 } from "./normalize-content";
+import { isServerlessRuntime } from "./data-path";
 import {
+  beginGenerationBudget,
   chatWithFreeTextModels,
   chatWithFreeVisionModels,
+  clearGenerationBudget,
   generateImageWithFreeModels,
   tryChatWithFreeTextModels,
   tryChatWithFreeVisionModels,
@@ -137,9 +140,12 @@ Guidelines:
 Return ONLY valid JSON, no markdown.`;
 
 function buildImageContent(imageUrls: string[]) {
-  return imageUrls.slice(0, 2).map((url) => ({
+  const detail = isServerlessRuntime() ? ("low" as const) : ("high" as const);
+  const limit = isServerlessRuntime() ? 1 : 2;
+
+  return imageUrls.slice(0, limit).map((url) => ({
     type: "image_url" as const,
-    image_url: { url, detail: "high" as const },
+    image_url: { url, detail },
   }));
 }
 
@@ -209,28 +215,33 @@ async function tryCombinedVision(
 ): Promise<CombinedResult | null> {
   const imageContent = buildImageContent(imageUrls);
   const prompt = buildVisionPrompt(COMBINED_VISION_PROMPT, productHint);
+  const maxTokens = isServerlessRuntime() ? 1800 : 2400;
+  const messages = [
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: prompt }, ...imageContent],
+    },
+  ];
+
+  if (isServerlessRuntime()) {
+    const fallback = await tryChatWithFreeVisionModels<CombinedResult>({
+      maxTokens,
+      messages,
+    });
+    return normalizeCombinedResult(fallback?.content ?? null);
+  }
 
   try {
     const result = await chatWithFreeVisionModels<CombinedResult>({
-      maxTokens: 2400,
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }, ...imageContent],
-        },
-      ],
+      maxTokens,
+      messages,
     });
 
     return normalizeCombinedResult(result.content);
   } catch {
     const fallback = await tryChatWithFreeVisionModels<CombinedResult>({
-      maxTokens: 2400,
-      messages: [
-        {
-          role: "user",
-          content: [{ type: "text", text: prompt }, ...imageContent],
-        },
-      ],
+      maxTokens,
+      messages,
     });
 
     return normalizeCombinedResult(fallback?.content ?? null);
@@ -342,49 +353,56 @@ export async function generateFullProductPage(
   usedVisionFallback: boolean;
   warnings: string[];
 }> {
-  const warnings: string[] = [];
-  let analysis: ProductAnalysis;
-  let content: GeneratedContent;
-  let usedVisionFallback = false;
+  beginGenerationBudget();
 
-  const combinedVision =
-    (await tryCombinedVision(imageUrls, productHint)) ??
-    (await tryVisionAnalysisThenContent(imageUrls, productHint));
+  try {
+    const warnings: string[] = [];
+    let analysis: ProductAnalysis;
+    let content: GeneratedContent;
+    let usedVisionFallback = false;
 
-  if (combinedVision) {
-    analysis = combinedVision.analysis;
-    content = combinedVision.content;
-  } else if (hasUsableHint(productHint)) {
-    const combinedHint = await tryCombinedHint(productHint!.trim());
-    analysis = combinedHint!.analysis;
-    content = combinedHint!.content;
-    usedVisionFallback = true;
-    warnings.push(
-      "비전/텍스트 모델 사용량 제한으로 입력 힌트 기반으로 상품 정보를 생성했습니다."
-    );
-  } else {
-    throw new Error(
-      "이미지 분석에 실패했습니다. 1~2분 후 다시 시도하거나, 상품명/카테고리 힌트(예: 현대 SUV, 블랙)를 입력해 주세요."
-    );
-  }
+    const combinedVision = isServerlessRuntime()
+      ? await tryCombinedVision(imageUrls, productHint)
+      : ((await tryCombinedVision(imageUrls, productHint)) ??
+        (await tryVisionAnalysisThenContent(imageUrls, productHint)));
 
-  let thumbnailImageUrl: string | null = null;
-  if (isThumbnailImageEnabled()) {
-    try {
-      thumbnailImageUrl = await generateThumbnailImage(
-        content.title,
-        content.thumbnailText
+    if (combinedVision) {
+      analysis = combinedVision.analysis;
+      content = combinedVision.content;
+    } else if (hasUsableHint(productHint)) {
+      const combinedHint = await tryCombinedHint(productHint!.trim());
+      analysis = combinedHint!.analysis;
+      content = combinedHint!.content;
+      usedVisionFallback = true;
+      warnings.push(
+        "비전/텍스트 모델 사용량 제한으로 입력 힌트 기반으로 상품 정보를 생성했습니다."
       );
-    } catch {
-      thumbnailImageUrl = null;
+    } else {
+      throw new Error(
+        "이미지 분석에 실패했습니다. 1~2분 후 다시 시도하거나, 상품명/카테고리 힌트(예: 현대 SUV, 블랙)를 입력해 주세요."
+      );
     }
-  }
 
-  return {
-    analysis,
-    content,
-    thumbnailImageUrl,
-    usedVisionFallback,
-    warnings,
-  };
+    let thumbnailImageUrl: string | null = null;
+    if (isThumbnailImageEnabled()) {
+      try {
+        thumbnailImageUrl = await generateThumbnailImage(
+          content.title,
+          content.thumbnailText
+        );
+      } catch {
+        thumbnailImageUrl = null;
+      }
+    }
+
+    return {
+      analysis,
+      content,
+      thumbnailImageUrl,
+      usedVisionFallback,
+      warnings,
+    };
+  } finally {
+    clearGenerationBudget();
+  }
 }

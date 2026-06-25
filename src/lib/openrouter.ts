@@ -13,6 +13,67 @@ const PASS_DELAYS_MS = [0, 4000];
 const TEXT_PASS_DELAYS_MS = [0, 2500, 6000, 12000];
 const VISION_PASS_DELAYS_MS = [0, 3000, 6000];
 
+/** Vercel 60s 제한 내 완료를 위한 서버리스 상한 */
+const SERVERLESS_GENERATION_BUDGET_MS = 48_000;
+const SERVERLESS_REQUEST_TIMEOUT_MS = 16_000;
+const SERVERLESS_MAX_PASSES_VISION = 1;
+const SERVERLESS_MAX_PASSES_TEXT = 1;
+const SERVERLESS_MAX_ATTEMPTS_VISION = 3;
+const SERVERLESS_MAX_ATTEMPTS_TEXT = 3;
+
+let generationDeadline: number | null = null;
+
+export function beginGenerationBudget(
+  budgetMs = SERVERLESS_GENERATION_BUDGET_MS
+): void {
+  generationDeadline = Date.now() + budgetMs;
+}
+
+export function clearGenerationBudget(): void {
+  generationDeadline = null;
+}
+
+function isServerlessDeploy(): boolean {
+  return Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+}
+
+function hasGenerationBudget(): boolean {
+  return generationDeadline === null || Date.now() < generationDeadline;
+}
+
+function getPassesForTask(task: ModelTask, quick = false): number {
+  if (!isServerlessDeploy()) {
+    if (quick) return MAX_PASSES_QUICK;
+    if (task === "vision") return MAX_PASSES_VISION;
+    if (task === "text") return MAX_PASSES_TEXT;
+    return MAX_PASSES;
+  }
+
+  return quick ? 1 : task === "text" ? SERVERLESS_MAX_PASSES_TEXT : SERVERLESS_MAX_PASSES_VISION;
+}
+
+function getMaxAttemptsForTask(task: ModelTask): number {
+  if (!isServerlessDeploy()) {
+    if (task === "vision") return MAX_MODEL_ATTEMPTS_VISION;
+    if (task === "text") return MAX_MODEL_ATTEMPTS_TEXT;
+    return MAX_MODEL_ATTEMPTS;
+  }
+
+  if (task === "vision") return SERVERLESS_MAX_ATTEMPTS_VISION;
+  if (task === "text") return SERVERLESS_MAX_ATTEMPTS_TEXT;
+  return 3;
+}
+
+function getPassDelays(task: ModelTask): number[] {
+  if (!isServerlessDeploy()) {
+    if (task === "vision") return VISION_PASS_DELAYS_MS;
+    if (task === "text") return TEXT_PASS_DELAYS_MS;
+    return PASS_DELAYS_MS;
+  }
+
+  return [0];
+}
+
 const APP_REFERER =
   process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ??
   "http://localhost:50005";
@@ -338,6 +399,22 @@ async function getCandidateModels(
     return [pinnedText];
   }
 
+  if (isServerlessDeploy() && options?.prioritize) {
+    const priority =
+      task === "vision"
+        ? PRIORITY_VISION_MODELS
+        : task === "text"
+          ? PRIORITY_TEXT_MODELS
+          : getFallbackModels(task);
+
+    return priority
+      .filter(
+        (id) =>
+          !failedModels.has(id) && !isTemporarilyBlocked(id, ignoreCooldown)
+      )
+      .slice(0, getMaxAttemptsForTask(task));
+  }
+
   const cache = cacheByTask[task];
   const now = Date.now();
   let models: string[];
@@ -422,6 +499,9 @@ async function requestCompletion(
     method: "POST",
     headers: getRequestHeaders(),
     body: JSON.stringify(body),
+    signal: isServerlessDeploy()
+      ? AbortSignal.timeout(SERVERLESS_REQUEST_TIMEOUT_MS)
+      : undefined,
   });
 
   const bodyText = await response.text();
@@ -454,12 +534,11 @@ async function tryModels<T>(
   options?: { maxAttempts?: number; prioritize?: boolean }
 ): Promise<{ content: T; model: string } | null> {
   const maxAttempts =
-    options?.maxAttempts ??
-    (task === "vision"
-      ? MAX_MODEL_ATTEMPTS_VISION
-      : task === "text"
-        ? MAX_MODEL_ATTEMPTS_TEXT
-        : MAX_MODEL_ATTEMPTS);
+    options?.maxAttempts ?? getMaxAttemptsForTask(task);
+
+  if (!hasGenerationBudget()) {
+    return null;
+  }
 
   const candidates = (
     await getCandidateModels(task, ignoreCooldown, {
@@ -473,7 +552,13 @@ async function tryModels<T>(
   }
 
   for (const model of candidates) {
-    for (const useJsonMode of [true, false]) {
+    if (!hasGenerationBudget()) {
+      return null;
+    }
+
+    const jsonModes = isServerlessDeploy() ? [true] : [true, false];
+
+    for (const useJsonMode of jsonModes) {
       try {
         const result = await requestCompletion(
           model,
@@ -524,18 +609,17 @@ async function runWithPasses<T>(
   task: ModelTask,
   messages: ChatMessage[],
   maxTokens: number,
-  maxPasses: number,
-  options?: { delays?: number[]; maxAttempts?: number; prioritize?: boolean }
+  passCount: number,
+  options?: { delays?: number[]; maxAttempts?: number; prioritize?: boolean; maxPasses?: number }
 ): Promise<{ content: T; model: string } | null> {
-  const delays =
-    options?.delays ??
-    (task === "vision"
-      ? VISION_PASS_DELAYS_MS
-      : task === "text"
-        ? TEXT_PASS_DELAYS_MS
-        : PASS_DELAYS_MS);
+  const delays = options?.delays ?? getPassDelays(task);
+  const totalPasses = options?.maxPasses ?? passCount;
 
-  for (let pass = 0; pass < maxPasses; pass++) {
+  for (let pass = 0; pass < totalPasses; pass++) {
+    if (!hasGenerationBudget()) {
+      return null;
+    }
+
     const ignoreCooldown = pass > 0;
     const result = await tryModels<T>(
       task,
@@ -553,7 +637,7 @@ async function runWithPasses<T>(
       return result;
     }
 
-    if (pass < maxPasses - 1) {
+    if (pass < totalPasses - 1) {
       await sleep(delays[pass + 1] ?? 3000);
     }
   }
@@ -570,8 +654,11 @@ export async function chatWithFreeVisionModels<T>(options: {
     "vision",
     options.messages,
     options.maxTokens,
-    MAX_PASSES_VISION,
-    { prioritize: true, maxAttempts: MAX_MODEL_ATTEMPTS_VISION }
+    getPassesForTask("vision"),
+    {
+      prioritize: true,
+      maxAttempts: getMaxAttemptsForTask("vision"),
+    }
   );
 
   if (result) {
@@ -593,8 +680,11 @@ export async function tryChatWithFreeVisionModels<T>(options: {
       "vision",
       options.messages,
       options.maxTokens,
-      MAX_PASSES_QUICK,
-      { prioritize: true, maxAttempts: MAX_MODEL_ATTEMPTS_VISION }
+      getPassesForTask("vision", true),
+      {
+        prioritize: true,
+        maxAttempts: getMaxAttemptsForTask("vision"),
+      }
     );
   } catch {
     return null;
@@ -610,8 +700,11 @@ export async function chatWithFreeTextModels<T>(options: {
     "text",
     options.messages,
     options.maxTokens,
-    MAX_PASSES_TEXT,
-    { prioritize: true, maxAttempts: MAX_MODEL_ATTEMPTS_TEXT }
+    getPassesForTask("text"),
+    {
+      prioritize: true,
+      maxAttempts: getMaxAttemptsForTask("text"),
+    }
   );
 
   if (result) {
