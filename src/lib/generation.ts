@@ -224,11 +224,19 @@ async function tryCombinedVision(
   ];
 
   if (isServerlessRuntime()) {
-    const fallback = await tryChatWithFreeVisionModels<CombinedResult>({
-      maxTokens,
-      messages,
-    });
-    return normalizeCombinedResult(fallback?.content ?? null);
+    try {
+      const result = await chatWithFreeVisionModels<CombinedResult>({
+        maxTokens,
+        messages,
+      });
+      return normalizeCombinedResult(result.content);
+    } catch {
+      const fallback = await tryChatWithFreeVisionModels<CombinedResult>({
+        maxTokens,
+        messages,
+      });
+      return normalizeCombinedResult(fallback?.content ?? null);
+    }
   }
 
   try {
@@ -297,20 +305,34 @@ async function tryVisionAnalysisThenContent(
   return { analysis, content };
 }
 
-async function tryCombinedHint(hint: string): Promise<CombinedResult | null> {
+async function tryCombinedHint(
+  hint: string
+): Promise<{ data: CombinedResult; offline: boolean }> {
   const prompt = COMBINED_HINT_PROMPT.replace("{hint}", hint);
-
-  const result = await tryChatWithFreeTextModels<CombinedResult>({
+  const request = {
     maxTokens: 2000,
-    messages: [{ role: "user", content: prompt }],
-  });
+    messages: [{ role: "user" as const, content: prompt }],
+  };
 
+  const result = await tryChatWithFreeTextModels<CombinedResult>(request);
   if (result) {
     const normalized = normalizeCombinedResult(result.content);
-    if (normalized) return normalized;
+    if (normalized) {
+      return { data: normalized, offline: false };
+    }
   }
 
-  return buildFallbackFromHint(hint);
+  try {
+    const retry = await chatWithFreeTextModels<CombinedResult>(request);
+    const normalized = normalizeCombinedResult(retry.content);
+    if (normalized) {
+      return { data: normalized, offline: false };
+    }
+  } catch {
+    // 텍스트 모델도 실패 시 오프라인 템플릿으로 대체
+  }
+
+  return { data: buildFallbackFromHint(hint), offline: true };
 }
 
 export async function generateProductContent(
@@ -370,13 +392,19 @@ export async function generateFullProductPage(
       analysis = combinedVision.analysis;
       content = combinedVision.content;
     } else if (hasUsableHint(productHint)) {
-      const combinedHint = await tryCombinedHint(productHint!.trim());
-      analysis = combinedHint!.analysis;
-      content = combinedHint!.content;
+      const hintResult = await tryCombinedHint(productHint!.trim());
+      analysis = hintResult.data.analysis;
+      content = hintResult.data.content;
       usedVisionFallback = true;
-      warnings.push(
-        "비전/텍스트 모델 사용량 제한으로 입력 힌트 기반으로 상품 정보를 생성했습니다."
-      );
+      if (hintResult.offline) {
+        warnings.push(
+          "AI 생성에 실패해 기본 템플릿으로 대체되었습니다. 상품 힌트를 구체적으로 입력하거나 잠시 후 다시 시도해 주세요."
+        );
+      } else {
+        warnings.push(
+          "이미지 분석이 제한되어 입력 힌트 기반으로 상품 정보를 생성했습니다."
+        );
+      }
     } else {
       throw new Error(
         "이미지 분석에 실패했습니다. 1~2분 후 다시 시도하거나, 상품명/카테고리 힌트(예: 현대 SUV, 블랙)를 입력해 주세요."

@@ -13,13 +13,14 @@ const PASS_DELAYS_MS = [0, 4000];
 const TEXT_PASS_DELAYS_MS = [0, 2500, 6000, 12000];
 const VISION_PASS_DELAYS_MS = [0, 3000, 6000];
 
-/** Vercel 60s 제한 내 완료를 위한 서버리스 상한 */
-const SERVERLESS_GENERATION_BUDGET_MS = 48_000;
-const SERVERLESS_REQUEST_TIMEOUT_MS = 16_000;
-const SERVERLESS_MAX_PASSES_VISION = 1;
-const SERVERLESS_MAX_PASSES_TEXT = 1;
-const SERVERLESS_MAX_ATTEMPTS_VISION = 3;
-const SERVERLESS_MAX_ATTEMPTS_TEXT = 3;
+/** Vercel 60s 제한 내 완료 — AI 품질과 타임아웃 균형 */
+const SERVERLESS_GENERATION_BUDGET_MS = 55_000;
+const SERVERLESS_REQUEST_TIMEOUT_MS = 24_000;
+const SERVERLESS_MAX_PASSES_VISION = 2;
+const SERVERLESS_MAX_PASSES_TEXT = 2;
+const SERVERLESS_MAX_ATTEMPTS_VISION = 4;
+const SERVERLESS_MAX_ATTEMPTS_TEXT = 6;
+const SERVERLESS_PASS_DELAYS_MS = [0, 2_500];
 
 let generationDeadline: number | null = null;
 
@@ -71,12 +72,14 @@ function getPassDelays(task: ModelTask): number[] {
     return PASS_DELAYS_MS;
   }
 
-  return [0];
+  return SERVERLESS_PASS_DELAYS_MS;
 }
 
 const APP_REFERER =
   process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ??
-  "http://localhost:50005";
+  (process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : "http://localhost:50005");
 
 /** 비전 정확도 우선 — 상위 모델부터 순차 시도 (셔플하지 않음) */
 const PRIORITY_VISION_MODELS = [
