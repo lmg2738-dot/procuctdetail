@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
       const allWarnings = [...warnings];
       if (isEphemeralStorage()) {
         allWarnings.push(
-          "Vercel KV가 연결되지 않아 생성 이력이 유지되지 않을 수 있습니다. Vercel 대시보드 → Storage → KV를 연결해 주세요."
+          "영구 저장소가 연결되지 않았습니다. Vercel → Storage → Create Database → Upstash for Redis를 연결해 주세요."
         );
       }
 
