@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getStorageStatus } from "@/lib/storage-config";
 import { deleteProduct, listProducts } from "@/lib/storage";
 
 export async function GET() {
   try {
     const products = await listProducts();
-    return NextResponse.json({ products });
+    return NextResponse.json({ products, storage: getStorageStatus() });
   } catch (error) {
     const message = error instanceof Error ? error.message : "서버 오류";
     return NextResponse.json({ error: message }, { status: 500 });

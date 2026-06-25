@@ -12,6 +12,7 @@ interface ProductWithPages extends Product {
 
 export default function DashboardPage() {
   const [products, setProducts] = useState<ProductWithPages[]>([]);
+  const [storageWarning, setStorageWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -22,6 +23,7 @@ export default function DashboardPage() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error);
         setProducts(data.products || []);
+        setStorageWarning(data.storage?.warning ?? null);
       } catch (err) {
         setError(err instanceof Error ? err.message : "조회 실패");
       } finally {
@@ -56,6 +58,12 @@ export default function DashboardPage() {
           새로 만들기
         </Link>
       </div>
+
+      {storageWarning && (
+        <div className="mb-6 rounded-xl border border-amber-200/80 bg-amber-50/80 px-4 py-3 text-sm text-amber-900">
+          {storageWarning}
+        </div>
+      )}
 
       {error && (
         <div className="mb-6 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">

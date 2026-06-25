@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { isEphemeralStorage } from "@/lib/data-path";
 import { isKvStorageEnabled } from "@/lib/storage-kv";
+import { getStorageWarning } from "@/lib/storage-config";
 import { imagesToDataUrls } from "@/lib/images";
 import { saveProductThumbnail, toAbsoluteImageUrl } from "@/lib/image-store";
 import { generateFullProductPage } from "@/lib/generation";
@@ -72,10 +72,9 @@ export async function POST(request: NextRequest) {
       const normalizedContent = normalizeGeneratedContent(content);
 
       const allWarnings = [...warnings];
-      if (isEphemeralStorage()) {
-        allWarnings.push(
-          "영구 저장소가 연결되지 않았습니다. Vercel → Storage → Create Database → Upstash for Redis를 연결해 주세요."
-        );
+      const storageWarning = getStorageWarning();
+      if (storageWarning) {
+        allWarnings.push(storageWarning);
       }
 
       const displayImages = thumbnailImageUrl
