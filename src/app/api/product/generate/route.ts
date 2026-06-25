@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { isEphemeralStorage } from "@/lib/data-path";
 import { imagesToDataUrls } from "@/lib/images";
 import { saveProductThumbnail, toAbsoluteImageUrl } from "@/lib/image-store";
 import { generateFullProductPage } from "@/lib/generation";
@@ -63,6 +64,13 @@ export async function POST(request: NextRequest) {
 
       const normalizedContent = normalizeGeneratedContent(content);
 
+      const allWarnings = [...warnings];
+      if (isEphemeralStorage()) {
+        allWarnings.push(
+          "Vercel 서버리스 환경에서는 생성 이력이 일시적으로만 저장됩니다. 대시보드 목록이 비어 있을 수 있습니다."
+        );
+      }
+
       const displayImages = thumbnailImageUrl
         ? [thumbnailImageUrl, toAbsoluteImageUrl(thumbnailPath)]
         : [toAbsoluteImageUrl(thumbnailPath)];
@@ -95,7 +103,7 @@ export async function POST(request: NextRequest) {
         markdown: markdownContent,
         thumbnailImageUrl,
         imageUrl: thumbnailPath,
-        warnings,
+        warnings: allWarnings,
       });
     } catch (genError) {
       const message =

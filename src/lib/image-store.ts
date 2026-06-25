@@ -1,7 +1,10 @@
 import { promises as fs } from "fs";
 import path from "path";
+import { getImagesRoot } from "@/lib/data-path";
 
-const IMAGES_DIR = path.join(process.cwd(), "data", "images");
+function imagesDir(): string {
+  return getImagesRoot();
+}
 
 export async function saveProductThumbnail(
   productId: string,
@@ -19,7 +22,7 @@ export async function saveProductThumbnail(
       ? "webp"
       : "jpg";
 
-  const dir = path.join(IMAGES_DIR, productId);
+  const dir = path.join(imagesDir(), productId);
   await fs.mkdir(dir, { recursive: true });
 
   const fileName = `thumb.${ext}`;
@@ -36,7 +39,7 @@ export async function readProductImage(
   fileName: string
 ): Promise<{ buffer: Buffer; mimeType: string } | null> {
   const safeName = path.basename(fileName);
-  const filePath = path.join(IMAGES_DIR, productId, safeName);
+  const filePath = path.join(imagesDir(), productId, safeName);
 
   try {
     const buffer = await fs.readFile(filePath);
@@ -61,7 +64,9 @@ export function toAbsoluteImageUrl(relativePath: string): string {
 
   const base =
     process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ??
-    "http://localhost:50005";
+    (process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : "http://localhost:50005");
 
   return `${base}${relativePath.startsWith("/") ? relativePath : `/${relativePath}`}`;
 }

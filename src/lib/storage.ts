@@ -1,11 +1,14 @@
 import { promises as fs } from "fs";
 import path from "path";
 import { randomUUID } from "crypto";
+import {
+  getDataRoot,
+  getImagesRoot,
+  getProductsFilePath,
+} from "@/lib/data-path";
 import type { GeneratedPage, Product, ProductAnalysis } from "@/types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const PRODUCTS_FILE = path.join(DATA_DIR, "products.json");
-
+const PRODUCTS_FILE = getProductsFilePath();
 export interface StoredProduct extends Product {
   generated_pages: GeneratedPage[];
 }
@@ -21,9 +24,8 @@ let cacheLoadedAt = 0;
 const CACHE_TTL_MS = 5_000;
 
 async function ensureDataDir(): Promise<void> {
-  await fs.mkdir(DATA_DIR, { recursive: true });
+  await fs.mkdir(getDataRoot(), { recursive: true });
 }
-
 async function readProductsFromDisk(): Promise<StoredProduct[]> {
   await ensureDataDir();
   try {
@@ -183,7 +185,7 @@ export async function deleteProduct(id: string): Promise<boolean> {
 
   await writeProducts(nextProducts);
 
-  const imageDir = path.join(DATA_DIR, "images", id);
+  const imageDir = path.join(getImagesRoot(), id);
   await fs.rm(imageDir, { recursive: true, force: true });
 
   return true;
